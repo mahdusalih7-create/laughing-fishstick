@@ -11,15 +11,10 @@ const client = new Client({
     ]
 });
 
-// ============================================
-// منطق فك التشفير (نفس الـ HTML)
-// ============================================
-
 function detectType(code) {
     if (/LOL!/.test(code)) return 'LOL';
-    if (/IronBrew/.test(code) || /\bVM\s*=\s*\{/.test(code)) return 'IronBrew';
+    if (/IronBrew/.test(code)) return 'IronBrew';
     if (/Luraph/.test(code)) return 'Luraph';
-    if (/loadstring.*base64/is.test(code)) return 'Base64';
     return 'Generic';
 }
 
@@ -31,7 +26,9 @@ function decodeLOLBytes(hexStr) {
             const cnt = parseInt(hexStr[i], 16);
             const val = parseInt(hexStr.substr(i + 2, 2), 16);
             if (!isNaN(cnt) && !isNaN(val)) {
-                for (let k = 0; k < cnt; k++) b.push(val);
+                for (let k = 0; k < cnt; k++) {
+                    b.push(val);
+                }
             }
             i += 4;
         } else {
@@ -49,14 +46,22 @@ function extractLOLStrings(bytes) {
     while (i < bytes.length - 6) {
         if (bytes[i] === 0x03) {
             const len = bytes[i + 1];
-            if (len > 0 && len <= 250 && bytes[i+2]===0 && bytes[i+3]===0 && bytes[i+4]===0) {
-                let s = '', ok = true;
+            if (len > 0 && len <= 250 && bytes[i+2] === 0 && bytes[i+3] === 0 && bytes[i+4] === 0) {
+                let s = '';
+                let ok = true;
                 for (let j = 0; j < len; j++) {
                     const c = bytes[i + 5 + j];
-                    if (c === undefined) { ok = false; break; }
+                    if (c === undefined) {
+                        ok = false;
+                        break;
+                    }
                     s += String.fromCharCode(c);
                 }
-                if (ok && s.length === len) { strs.push(s); i += 5 + len; continue; }
+                if (ok && s.length === len) {
+                    strs.push(s);
+                    i += 5 + len;
+                    continue;
+                }
             }
         }
         i++;
@@ -69,10 +74,13 @@ function extractLOLNumbers(bytes) {
     let i = 1;
     while (i < bytes.length - 10) {
         if (bytes[i] === 0x02) {
-            const arr = new Uint8Array(8);
-            for (let j = 0; j < 8; j++) arr[j] = bytes[i + 1 + j] || 0;
-            const v = new DataView(arr.buffer).getFloat64(0, true);
-            if (isFinite(v) && v !== 0) { nums.push(v); i += 9; continue; }
+            const buf = Buffer.from(bytes.slice(i + 1, i + 9));
+            const v = buf.readDoubleLE(0);
+            if (isFinite(v) && v !== 0) {
+                nums.push(v);
+                i += 9;
+                continue;
+            }
         }
         i++;
     }
@@ -82,41 +90,62 @@ function extractLOLNumbers(bytes) {
 function extractVarMap(code) {
     const map = {};
     const known = [
-        ['tonumber','tonumber'],['string\\.byte','string.byte'],
-        ['string\\.char','string.char'],['string\\.sub','string.sub'],
-        ['string\\.gsub','string.gsub'],['string\\.rep','string.rep'],
-        ['string\\.format','string.format'],['string\\.find','string.find'],
-        ['table\\.concat','table.concat'],['table\\.insert','table.insert'],
-        ['table\\.unpack','table.unpack'],['math\\.floor','math.floor'],
-        ['math\\.abs','math.abs'],['getfenv','getfenv'],
-        ['setmetatable','setmetatable'],['pcall','pcall'],
-        ['load','load'],['loadstring','loadstring'],
-        ['type','type'],['pairs','pairs'],['ipairs','ipairs'],
-        ['tostring','tostring'],['print','print'],
+        ['tonumber', 'tonumber'],
+        ['string\\.byte', 'string.byte'],
+        ['string\\.char', 'string.char'],
+        ['string\\.sub', 'string.sub'],
+        ['string\\.gsub', 'string.gsub'],
+        ['string\\.rep', 'string.rep'],
+        ['string\\.format', 'string.format'],
+        ['string\\.find', 'string.find'],
+        ['table\\.concat', 'table.concat'],
+        ['table\\.insert', 'table.insert'],
+        ['table\\.unpack', 'table.unpack'],
+        ['math\\.floor', 'math.floor'],
+        ['math\\.abs', 'math.abs'],
+        ['setmetatable', 'setmetatable'],
+        ['pcall', 'pcall'],
+        ['loadstring', 'loadstring'],
+        ['type', 'type'],
+        ['pairs', 'pairs'],
+        ['ipairs', 'ipairs'],
+        ['tostring', 'tostring'],
+        ['print', 'print']
     ];
-    for (const [pat, name] of known) {
-        const re = new RegExp('local\\s+(v\\d+)\\s*=\\s*' + pat + '(?:\\s+or\\b[^;\\n]+)?', 'g');
+    for (let idx = 0; idx < known.length; idx++) {
+        const pat = known[idx][0];
+        const name = known[idx][1];
+        const re = new RegExp('local\\s+(v\\d+)\\s*=\\s*' + pat, 'g');
         let m;
-        while ((m = re.exec(code)) !== null) map[m[1]] = name;
+        while ((m = re.exec(code)) !== null) {
+            map[m[1]] = name;
+        }
     }
     return map;
 }
 
 function simplMath(code) {
-    let prev = '', safety = 0;
-    while (prev !== code && safety++ < 20) {
+    let prev = '';
+    let safety = 0;
+    while (prev !== code && safety < 20) {
         prev = code;
-        code = code.replace(/\(\s*(\d+)\s*\+\s*(\d+)\s*/g, (_, a, b) => String(+a + +b));
-        code = code.replace(/\s*(\d+)\s*-\s*(\d+)\s*/g, (_, a, b) => {
-            const r = +a - +b;
-            return r >= 0 ? String(r) : _;
+        safety++;
+        code = code.replace(/\(\s*(\d+)\s*\+\s*(\d+)\s*\)/g, function(match, a, b) {
+            return String(Number(a) + Number(b));
+        });
+        code = code.replace(/\b(\d+)\s*\+\s*(\d+)\b/g, function(match, a, b) {
+            const r = Number(a) + Number(b);
+            return r < 100000 ? String(r) : match;
         });
     }
     return code;
 }
 
 function applyVarMap(code, map) {
-    for (const [v, name] of Object.entries(map)) {
+    const keys = Object.keys(map);
+    for (let i = 0; i < keys.length; i++) {
+        const v = keys[i];
+        const name = map[v];
         code = code.replace(new RegExp('\\b' + v + '\\b', 'g'), name);
     }
     return code;
@@ -124,11 +153,13 @@ function applyVarMap(code, map) {
 
 function genericStrings(code) {
     const s = new Set();
-    for (const m of code.matchAll(/"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'/g)) {
+    const re = /"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'/g;
+    let m;
+    while ((m = re.exec(code)) !== null) {
         const v = m[1] || m[2];
-        if (v && v.length > 1 && !/^\s*$/.test(v)) s.add(v);
+        if (v && v.length > 1) s.add(v);
     }
-    return [...s];
+    return Array.from(s);
 }
 
 function escStr(s) {
@@ -137,18 +168,22 @@ function escStr(s) {
 
 function reconstructLOL(strings, numbers) {
     const L = [];
-    const urls = strings.filter(s => /^https?:\/\//i.test(s));
+    const urls = strings.filter(function(s) { return /^https?:\/\//i.test(s); });
     const svcList = ['Players','RunService','UserInputService','TweenService',
                      'HttpService','ReplicatedStorage','Workspace','Lighting']
-                    .filter(s => strings.includes(s));
+                    .filter(function(s) { return strings.includes(s); });
 
-    L.push('--[[\n  كود Roblox المُفكّ -- LuaDecrypt\n  ' +
-           strings.length + ' ثابت نصي -- ' + urls.length + ' رابط\n]]');
+    L.push('--[[');
+    L.push('  كود Roblox المُفكّ -- LuaDecrypt');
+    L.push('  ' + strings.length + ' ثابت نصي -- ' + urls.length + ' رابط');
+    L.push(']]');
     L.push('');
 
-    if (svcList.length) {
+    if (svcList.length > 0) {
         L.push('-- الخدمات');
-        svcList.forEach(s => L.push(`local ${s} = game:GetService("${s}")`));
+        svcList.forEach(function(s) {
+            L.push('local ' + s + ' = game:GetService("' + s + '")');
+        });
         L.push('');
     }
 
@@ -159,15 +194,17 @@ function reconstructLOL(strings, numbers) {
         L.push('');
     }
 
-    if (urls.length) {
+    if (urls.length > 0) {
         L.push('-- الروابط المكتشفة');
-        urls.forEach((u, i) => L.push(`-- [${i+1}] ${u}`));
+        urls.forEach(function(u, i) {
+            L.push('-- [' + (i+1) + '] ' + u);
+        });
         L.push('');
     }
 
     L.push('-- جميع الثوابت المستخرجة');
-    strings.filter(s => s.length > 1).forEach((s, i) => {
-        L.push(`-- [${String(i).padStart(3,'0')}] "${escStr(s)}"`);
+    strings.filter(function(s) { return s.length > 1; }).forEach(function(s, i) {
+        L.push('-- [' + String(i).padStart(3,'0') + '] "' + escStr(s) + '"');
     });
 
     return L.join('\n');
@@ -186,121 +223,103 @@ function deobfuscate(code) {
             const bytes = decodeLOLBytes(hm[1]);
             strings = extractLOLStrings(bytes);
             const numbers = extractLOLNumbers(bytes);
-            urls = strings.filter(s => /^https?:\/\//i.test(s));
+            urls = strings.filter(function(s) { return /^https?:\/\//i.test(s); });
             result = reconstructLOL(strings, numbers);
         } else {
             strings = genericStrings(code);
-            urls = strings.filter(s => /^https?:\/\//i.test(s));
+            urls = strings.filter(function(s) { return /^https?:\/\//i.test(s); });
             result = '-- [[ LuaDecrypt -- فك عام ]]\n\n' + applyVarMap(simplMath(code), varMap);
         }
     } else {
         strings = genericStrings(code);
-        urls = strings.filter(s => /^https?:\/\//i.test(s));
+        urls = strings.filter(function(s) { return /^https?:\/\//i.test(s); });
         result = '-- [[ LuaDecrypt -- فك عام ]]\n\n' + applyVarMap(simplMath(code), varMap);
     }
 
-    return { result, type, strings, urls };
+    return { result: result, type: type, strings: strings, urls: urls };
 }
 
-// ============================================
-// البوت
-// ============================================
-
-client.once('ready', () => {
-    console.log('✅ البوت شغال: ' + client.user.tag);
+client.once('ready', function() {
+    console.log('البوت شغال: ' + client.user.tag);
 });
 
-client.on('messageCreate', async (message) => {
+client.on('messageCreate', async function(message) {
     if (message.author.bot) return;
 
-    // امر المساعدة
     if (message.content === '.help') {
         return message.reply(
-            '**🤖 أوامر البوت:**\n\n' +
-            '`.d` + رابط: فك تشفير كود من رابط\n' +
+            '**أوامر البوت:**\n\n' +
+            '`.d` + رابط: فك تشفير من رابط\n' +
             '`.d` + ملف `.lua`: فك تشفير ملف\n' +
-            '`.d` + كود بين ` ``` `: فك تشفير مباشر\n\n' +
-            '**مثال:**\n' +
-            '`.d https://raw.githubusercontent.com/.../script.lua`'
+            '`.d` + كود بين كود: فك تشفير مباشر'
         );
     }
 
-    // امر فك التشفير
     if (message.content.startsWith('.d')) {
         let code = '';
-        let loadMsg = await message.reply('⏳ جاري المعالجة...');
+        let loadMsg = await message.reply('جاري المعالجة...');
 
         try {
-            // حالة 1: رابط
             if (message.content.includes('http')) {
                 const url = message.content.split(' ')[1];
-                await loadMsg.edit('⏳ جاري تحميل الرابط...');
+                await loadMsg.edit('جاري تحميل الرابط...');
                 const res = await axios.get(url, { timeout: 10000 });
                 code = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
 
-            // حالة 2: ملف
             } else if (message.attachments.size > 0) {
                 const file = message.attachments.first();
                 if (!file.name.endsWith('.lua') && !file.name.endsWith('.txt')) {
-                    return loadMsg.edit('❌ الملف لازم يكون `.lua` أو `.txt`');
+                    return loadMsg.edit('الملف لازم يكون .lua أو .txt');
                 }
-                await loadMsg.edit('⏳ جاري قراءة الملف...');
+                await loadMsg.edit('جاري قراءة الملف...');
                 const res = await axios.get(file.url);
                 code = res.data;
 
-            // حالة 3: كود مباشر
             } else {
                 const match = message.content.match(/```(?:lua)?\n?([\s\S]+?)```/);
                 if (match) code = match[1];
             }
 
             if (!code) {
-                return loadMsg.edit(
-                    '❌ ما لقيت كود!\n' +
-                    'اكتب `.help` للمساعدة'
-                );
+                return loadMsg.edit('ما لقيت كود! اكتب .help للمساعدة');
             }
 
-            await loadMsg.edit('🔄 جاري فك التشفير...');
+            await loadMsg.edit('جاري فك التشفير...');
 
-            // فك التشفير
-            const { result, type, strings, urls } = deobfuscate(code);
+            const deobf = deobfuscate(code);
+            const result = deobf.result;
+            const type = deobf.type;
+            const strings = deobf.strings;
+            const urls = deobf.urls;
 
-            // بناء الرسالة
-            const statsText =
-                `\n📊 **النوع:** ${type}` +
-                ` | **الثوابت:** ${strings.length}` +
-                ` | **الروابط:** ${urls.length}`;
+            const statsText = '\nالنوع: ' + type +
+                ' | الثوابت: ' + strings.length +
+                ' | الروابط: ' + urls.length;
 
-            const urlsText = urls.length
-                ? '\n🔗 **روابط مكتشفة:**\n' + urls.map(u => `> ${u}`).join('\n')
+            const urlsText = urls.length > 0
+                ? '\nروابط مكتشفة:\n' + urls.map(function(u) { return '> ' + u; }).join('\n')
                 : '';
 
-            // اذا قصير ارسله مباشر
             if (result.length < 1800) {
                 await loadMsg.edit(
-                    '✅ **تم فك التشفير:**' + statsText + urlsText + '\n' +
+                    'تم فك التشفير:' + statsText + urlsText + '\n' +
                     '```lua\n' + result.slice(0, 1700) + '\n```'
                 );
-
-            // اذا طويل ارسله كملف
             } else {
                 const buffer = Buffer.from(result, 'utf8');
-                const attachment = new AttachmentBuilder(buffer, {
-                    name: 'deobfuscated.lua'
-                });
+                const attachment = new AttachmentBuilder(buffer, { name: 'deobfuscated.lua' });
                 await loadMsg.delete();
                 await message.reply({
-                    content: '✅ **تم فك التشفير**' + statsText + urlsText,
+                    content: 'تم فك التشفير' + statsText + urlsText,
                     files: [attachment]
                 });
             }
 
         } catch (err) {
             console.error(err);
-            await loadMsg.edit('❌ صار خطأ: ' + err.message);
+            await loadMsg.edit('صار خطأ: ' + err.message);
         }
     }
 });
 
-client.login(TOKEN);, 
+client.login(TOKEN);
